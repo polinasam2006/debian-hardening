@@ -1,0 +1,25 @@
+# Ansible
+*.retry
+.vault_pass
+vault_pass.txt
+
+# Секреты и переменные окружения
+*.env
+.env
+group_vars/all/vault.yml
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.python-version
+
+# Временные файлы
+*.log
+*.tmp

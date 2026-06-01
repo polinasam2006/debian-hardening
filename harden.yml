@@ -1,0 +1,132 @@
+---
+- name: Harden Debian 12 (CIS Benchmark Level 1)
+  hosts: localhost
+  become: yes
+
+  vars:
+    ssh_port: 22
+    pass_max_days: 90
+
+  tasks:
+
+    - name: Установить необходимые пакеты
+      apt:
+        name: [unattended-upgrades, ufw, auditd, libpam-pwquality]
+        state: present
+        update_cache: yes
+
+    - name: Включить автоматические обновления безопасности
+      copy:
+        dest: /etc/apt/apt.conf.d/20auto-upgrades
+        content: |
+          APT::Periodic::Update-Package-Lists "1";
+          APT::Periodic::Unattended-Upgrade "1";
+        mode: "0644"
+
+    - name: Удалить небезопасные и ненужные сервисы
+      apt:
+        name: [telnet, rsh-client, xinetd, nis, avahi-daemon, cups]
+        state: absent
+        purge: yes
+
+    - name: Применить параметры безопасности ядра (sysctl)
+      sysctl:
+        name: "{{ item.name }}"
+        value: "{{ item.value }}"
+        sysctl_file: /etc/sysctl.d/99-cis.conf
+        reload: yes
+      loop:
+        - { name: "net.ipv4.ip_forward",                value: "0" }
+        - { name: "net.ipv4.conf.all.send_redirects",   value: "0" }
+        - { name: "net.ipv4.conf.all.accept_redirects", value: "0" }
+        - { name: "net.ipv4.tcp_syncookies",             value: "1" }
+        - { name: "kernel.randomize_va_space",           value: "2" }
+        - { name: "fs.suid_dumpable",                    value: "0" }
+
+    - name: Настроить SSH (CIS 5.2)
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: "{{ item.regexp }}"
+        line: "{{ item.line }}"
+      loop:
+        - { regexp: "^#?PermitRootLogin",        line: "PermitRootLogin no" }
+        - { regexp: "^#?PasswordAuthentication", line: "PasswordAuthentication no" }
+        - { regexp: "^#?X11Forwarding",          line: "X11Forwarding no" }
+        - { regexp: "^#?MaxAuthTries",           line: "MaxAuthTries 4" }
+        - { regexp: "^#?ClientAliveInterval",    line: "ClientAliveInterval 300" }
+        - { regexp: "^#?ClientAliveCountMax",    line: "ClientAliveCountMax 3" }
+      notify: Перезапустить SSH
+
+    - name: Настроить политику паролей (CIS 5.4)
+      lineinfile:
+        path: /etc/login.defs
+        regexp: "{{ item.regexp }}"
+        line: "{{ item.line }}"
+      loop:
+        - { regexp: "^PASS_MAX_DAYS",  line: "PASS_MAX_DAYS  {{ pass_max_days }}" }
+        - { regexp: "^PASS_MIN_DAYS",  line: "PASS_MIN_DAYS  1" }
+        - { regexp: "^PASS_WARN_AGE",  line: "PASS_WARN_AGE  7" }
+        - { regexp: "^ENCRYPT_METHOD", line: "ENCRYPT_METHOD yescrypt" }
+
+    - name: Настроить требования к сложности пароля (CIS 5.3)
+      lineinfile:
+        path: /etc/security/pwquality.conf
+        regexp: "{{ item.regexp }}"
+        line: "{{ item.line }}"
+      loop:
+        - { regexp: "^# ?minlen",   line: "minlen = 12" }
+        - { regexp: "^# ?dcredit",  line: "dcredit = -1" }
+        - { regexp: "^# ?ucredit",  line: "ucredit = -1" }
+        - { regexp: "^# ?maxrepeat",line: "maxrepeat = 3" }
+
+    - name: Настроить межсетевой экран UFW (CIS 3.5)
+      ufw:
+        direction: "{{ item.direction }}"
+        policy: "{{ item.policy }}"
+      loop:
+        - { direction: incoming, policy: deny }
+        - { direction: outgoing, policy: allow }
+
+    - name: Разрешить SSH в UFW
+      ufw:
+        rule: allow
+        port: "{{ ssh_port }}"
+        proto: tcp
+
+    - name: Включить UFW
+      ufw:
+        state: enabled
+
+    - name: Добавить правила аудита (CIS 4.1)
+      copy:
+        dest: /etc/audit/rules.d/99-cis.rules
+        content: |
+          -w /etc/passwd        -p wa -k identity
+          -w /etc/shadow        -p wa -k identity
+          -w /etc/sudoers       -p wa -k sudo
+          -w /etc/ssh/sshd_config -p wa -k sshd
+          -a always,exit -F arch=b64 -S chmod,chown -F auid>=1000 -k perm_mod
+        mode: "0640"
+      notify: Перезапустить auditd
+
+    - name: Установить права на критические файлы (CIS 6.x)
+      file:
+        path: "{{ item.path }}"
+        owner: root
+        group: "{{ item.group }}"
+        mode: "{{ item.mode }}"
+      loop:
+        - { path: /etc/passwd,          group: root,   mode: "0644" }
+        - { path: /etc/shadow,          group: shadow, mode: "0640" }
+        - { path: /etc/ssh/sshd_config, group: root,   mode: "0600" }
+
+  handlers:
+    - name: Перезапустить SSH
+      service:
+        name: ssh
+        state: restarted
+
+    - name: Перезапустить auditd
+      service:
+        name: auditd
+        state: restarted
